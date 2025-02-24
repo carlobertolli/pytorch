@@ -1,9 +1,10 @@
+#include "hip/hip_runtime.h"
 #include <torch/csrc/distributed/c10d/CUDASymmetricMemory.hpp>
 
 #include <ATen/ceil_div.h>
-#include <ATen/cuda/CUDAContext.h>
-#include <c10/cuda/CUDACachingAllocator.h>
-#include <c10/cuda/CUDAGuard.h>
+#include <ATen/hip/HIPContext.h>
+#include <ATen/hip/impl/HIPCachingAllocatorMasqueradingAsCUDA.h>
+#include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
 
 #if !defined(USE_ROCM) && defined(PYTORCH_C10_DRIVER_API_SUPPORTED)
 #include <c10/cuda/driver_api.h>
@@ -32,7 +33,7 @@ bool device_has_multicast_support(int device_idx) {
   // cuMulticastCreate_.
   // - Device support: Determined by querying
   // CU_DEVICE_ATTRIBUTE_MULTICAST_SUPPORTED at runtime.
-  auto driver_api = c10::cuda::DriverAPI::get();
+  auto driver_api = c10::hip::DriverAPI::get();
   int multicast_supported;
   C10_CUDA_DRIVER_CHECK(driver_api->cuDeviceGetAttribute_(
       &multicast_supported,
@@ -243,8 +244,8 @@ void map_block(
     size_t size,
     int device_idx) {
 #if !defined(USE_ROCM) && defined(PYTORCH_C10_DRIVER_API_SUPPORTED)
-  auto driver_api = c10::cuda::DriverAPI::get();
-  auto dev_ptr = reinterpret_cast<CUdeviceptr*>(ptr);
+  auto driver_api = c10::hip::DriverAPI::get();
+  auto dev_ptr = reinterpret_cast<hipDeviceptr_t*>(ptr);
   C10_CUDA_DRIVER_CHECK(
       driver_api->cuMemAddressReserve_(dev_ptr, size, 0ULL, 0, 0ULL));
   C10_CUDA_DRIVER_CHECK(driver_api->cuMemMap_(*dev_ptr, size, 0, handle, 0ULL));
@@ -289,15 +290,15 @@ CUDASymmetricMemory::CUDASymmetricMemory(
       world_size_(world_size) {
   const size_t arr_size = sizeof(void*) * world_size_;
   buffers_dev_ = reinterpret_cast<void**>(
-      c10::cuda::CUDACachingAllocator::raw_alloc(arr_size));
+      c10::hip::HIPCachingAllocator::raw_alloc(arr_size));
   signal_pads_dev_ = reinterpret_cast<void**>(
-      c10::cuda::CUDACachingAllocator::raw_alloc(arr_size));
+      c10::hip::HIPCachingAllocator::raw_alloc(arr_size));
 
-  c10::cuda::CUDAGuard guard(local_device_idx);
-  AT_CUDA_CHECK(cudaMemcpy(
-      buffers_dev_, buffers_.data(), arr_size, cudaMemcpyHostToDevice));
-  AT_CUDA_CHECK(cudaMemcpy(
-      signal_pads_dev_, signal_pads_.data(), arr_size, cudaMemcpyHostToDevice));
+  c10::hip::HIPGuardMasqueradingAsCUDA guard(local_device_idx);
+  AT_CUDA_CHECK(hipMemcpy(
+      buffers_dev_, buffers_.data(), arr_size, hipMemcpyHostToDevice));
+  AT_CUDA_CHECK(hipMemcpy(
+      signal_pads_dev_, signal_pads_.data(), arr_size, hipMemcpyHostToDevice));
 }
 
 CUDASymmetricMemory::~CUDASymmetricMemory() {
@@ -306,17 +307,17 @@ CUDASymmetricMemory::~CUDASymmetricMemory() {
   if (is_finalizing()) {
     return;
   }
-  c10::cuda::CUDAGuard guard(local_device_idx_);
-  C10_CUDA_CHECK(cudaDeviceSynchronize());
+  c10::hip::HIPGuardMasqueradingAsCUDA guard(local_device_idx_);
+  C10_HIP_CHECK(hipDeviceSynchronize());
 
-  auto driver_api = c10::cuda::DriverAPI::get();
+  auto driver_api = c10::hip::DriverAPI::get();
   for (int r = 0; r < world_size_; ++r) {
     C10_CUDA_DRIVER_CHECK(driver_api->cuMemUnmap_(
-        reinterpret_cast<CUdeviceptr>(buffers_[r]), block_size_));
+        reinterpret_cast<hipDeviceptr_t>(buffers_[r]), block_size_));
     C10_CUDA_DRIVER_CHECK(driver_api->cuMemRelease_(handles_[r]));
   }
-  c10::cuda::CUDACachingAllocator::raw_delete(buffers_dev_);
-  c10::cuda::CUDACachingAllocator::raw_delete(signal_pads_dev_);
+  c10::hip::HIPCachingAllocator::raw_delete(buffers_dev_);
+  c10::hip::HIPCachingAllocator::raw_delete(signal_pads_dev_);
 #else
   TORCH_CHECK(
       false, "CUDASymmetricMemory requires PYTORCH_C10_DRIVER_API_SUPPORTED");
@@ -435,13 +436,13 @@ static __global__ void barrier_kernel(
 
 void CUDASymmetricMemory::barrier(int channel) {
   check_channel(channel, world_size_);
-  c10::cuda::CUDAGuard guard(local_device_idx_);
-  barrier_kernel<<<1, C10_WARP_SIZE, 0, at::cuda::getCurrentCUDAStream()>>>(
+  c10::hip::HIPGuardMasqueradingAsCUDA guard(local_device_idx_);
+ hipLaunchKernelGGL(( barrier_kernel), dim3(1), dim3(C10_WARP_SIZE), 0, at::hip::getCurrentHIPStreamMasqueradingAsCUDA(), 
       reinterpret_cast<uint32_t**>(signal_pads_dev_),
       channel,
       rank_,
       world_size_);
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  C10_HIP_KERNEL_LAUNCH_CHECK();
 }
 
 static __global__ void put_signal_kernel(
@@ -457,14 +458,14 @@ static __global__ void put_signal_kernel(
 
 void CUDASymmetricMemory::put_signal(int dst_rank, int channel) {
   check_channel(channel, world_size_);
-  c10::cuda::CUDAGuard guard(local_device_idx_);
-  put_signal_kernel<<<1, C10_WARP_SIZE, 0, at::cuda::getCurrentCUDAStream()>>>(
+  c10::hip::HIPGuardMasqueradingAsCUDA guard(local_device_idx_);
+ hipLaunchKernelGGL(( put_signal_kernel), dim3(1), dim3(C10_WARP_SIZE), 0, at::hip::getCurrentHIPStreamMasqueradingAsCUDA(), 
       reinterpret_cast<uint32_t**>(signal_pads_dev_),
       dst_rank,
       channel,
       rank_,
       world_size_);
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  C10_HIP_KERNEL_LAUNCH_CHECK();
 }
 
 static __global__ void wait_signal_kernel(
@@ -481,14 +482,14 @@ static __global__ void wait_signal_kernel(
 
 void CUDASymmetricMemory::wait_signal(int src_rank, int channel) {
   check_channel(channel, world_size_);
-  c10::cuda::CUDAGuard guard(local_device_idx_);
-  wait_signal_kernel<<<1, C10_WARP_SIZE, 0, at::cuda::getCurrentCUDAStream()>>>(
+  c10::hip::HIPGuardMasqueradingAsCUDA guard(local_device_idx_);
+ hipLaunchKernelGGL(( wait_signal_kernel), dim3(1), dim3(C10_WARP_SIZE), 0, at::hip::getCurrentHIPStreamMasqueradingAsCUDA(), 
       reinterpret_cast<uint32_t**>(signal_pads_dev_),
       src_rank,
       channel,
       rank_,
       world_size_);
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  C10_HIP_KERNEL_LAUNCH_CHECK();
 }
 
 int CUDASymmetricMemory::get_rank() {
@@ -504,7 +505,7 @@ void* CUDASymmetricMemoryAllocator::alloc(
     int device_idx,
     const std::string& group_name) {
 #if !defined(USE_ROCM) && defined(PYTORCH_C10_DRIVER_API_SUPPORTED)
-  auto driver_api = c10::cuda::DriverAPI::get();
+  auto driver_api = c10::hip::DriverAPI::get();
 
   CUmemAllocationProp prop = {};
   prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
@@ -528,8 +529,8 @@ void* CUDASymmetricMemoryAllocator::alloc(
   void* ptr = nullptr;
   map_block(&ptr, handle, block_size, device_idx);
 
-  c10::cuda::CUDAGuard guard(device_idx);
-  AT_CUDA_CHECK(cudaMemset(ptr, 0, block_size));
+  c10::hip::HIPGuardMasqueradingAsCUDA guard(device_idx);
+  AT_CUDA_CHECK(hipMemset(ptr, 0, block_size));
 
   auto block = c10::make_intrusive<Block>(
       handle, device_idx, block_size, size, signal_pad_offset, group_name);
@@ -554,9 +555,9 @@ void CUDASymmetricMemoryAllocator::free(void* ptr) {
   // Initializing CUDASymmetricMemory with an allocation transfers its
   // ownership to the CUDASymmetricMemory object.
   if (block->symm_mem == nullptr) {
-    auto driver_api = c10::cuda::DriverAPI::get();
+    auto driver_api = c10::hip::DriverAPI::get();
     C10_CUDA_DRIVER_CHECK(driver_api->cuMemUnmap_(
-        reinterpret_cast<CUdeviceptr>(ptr), block->block_size));
+        reinterpret_cast<hipDeviceptr_t>(ptr), block->block_size));
     C10_CUDA_DRIVER_CHECK(driver_api->cuMemRelease_(block->handle));
   }
   {
@@ -646,7 +647,7 @@ static void init_multicast_for_block(
     int world_size) {
 #if !defined(USE_ROCM) && defined(PYTORCH_C10_DRIVER_API_SUPPORTED) && \
     defined(CUDART_SUPPORTS_MULTICAST)
-  auto driver_api = c10::cuda::DriverAPI::get();
+  auto driver_api = c10::hip::DriverAPI::get();
   if (rank == 0) {
     CUmulticastObjectProp mc_prop{};
     mc_prop.numDevices = world_size;
@@ -654,10 +655,10 @@ static void init_multicast_for_block(
     mc_prop.size = block->block_size;
 
     auto err = driver_api->cuMulticastCreate_(&mc_handle, &mc_prop);
-    if (err != CUDA_SUCCESS) {
+    if (err != hipSuccess) {
       const char* err_str;
-      CUresult get_error_str_err = driver_api->cuGetErrorString_(err, &err_str);
-      if (get_error_str_err != CUDA_SUCCESS) {
+      hipError_t get_error_str_err = driver_api->cuGetErrorString_(err, &err_str);
+      if (get_error_str_err != hipSuccess) {
         err_str = "unknown cuda driver error";
       }
       LOG(WARNING)
@@ -716,7 +717,7 @@ c10::intrusive_ptr<SymmetricMemory> CUDASymmetricMemoryAllocator::rendezvous(
   int rank = group_info.rank;
   int world_size = group_info.world_size;
 
-  auto driver_api = c10::cuda::DriverAPI::get();
+  auto driver_api = c10::hip::DriverAPI::get();
   int block_fd;
   C10_CUDA_DRIVER_CHECK(driver_api->cuMemExportToShareableHandle_(
       &block_fd, block->handle, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, 0));

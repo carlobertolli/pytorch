@@ -1,8 +1,9 @@
+#include "hip/hip_runtime.h"
 #if defined(CUDART_VERSION) && CUDART_VERSION >= 12030
 
 #include <ATen/ATen.h>
 #include <ATen/ceil_div.h>
-#include <ATen/cuda/CUDAContext.h>
+#include <ATen/hip/HIPContext.h>
 
 #ifndef AT_PER_OPERATOR_HEADERS
 #include <ATen/Functions.h>
@@ -21,7 +22,7 @@ namespace {
 using namespace c10d::symmetric_memory;
 
 size_t get_and_verify_alignment(const at::Tensor& input, const char* op_name) {
-  const size_t min_alignment = std::max(4l, input.element_size());
+  const size_t min_alignment = ::max(4l, input.element_size());
   // Only check the offset since the multicast address is always at least
   // 128-bit aligned
   const size_t ptr_alignment = get_alignment(
@@ -45,7 +46,7 @@ size_t get_and_verify_alignment(const at::Tensor& input, const char* op_name) {
       ">: input size must be at least ",
       min_alignment,
       "-byte aligned.");
-  return std::min(ptr_alignment, size_alignment);
+  return ::min(ptr_alignment, size_alignment);
 }
 
 void init_elementwise_launch_config(
@@ -66,7 +67,7 @@ void init_elementwise_launch_config(
         at::ceil_div(numel_per_split, numel_per_thread),
         static_cast<size_t>(C10_WARP_SIZE));
   } else {
-    num_blocks = std::min(
+    num_blocks = ::min(
         at::ceil_div(
             numel_per_split, max_num_threads_per_block * numel_per_thread),
         max_num_blocks);
@@ -138,15 +139,15 @@ at::Tensor multimem_all_reduce_(
 
 #define DISPATCH(scalar_t, kernel_alignment)                                   \
   if (alignment == kernel_alignment) {                                         \
-    multimem_all_reduce_kernel<scalar_t, kernel_alignment>                     \
-        <<<num_blocks, num_threads, 0, at::cuda::getCurrentCUDAStream()>>>(    \
+   hipLaunchKernelGGL(( multimem_all_reduce_kernel<scalar_t, kernel_alignment>)                     \
+        , dim3(num_blocks), dim3(num_threads), 0, at::hip::getCurrentHIPStreamMasqueradingAsCUDA(),     \
             reinterpret_cast<scalar_t*>(symm_mem->get_multicast_ptr()) +       \
                 input.storage_offset(),                                        \
             input.numel(),                                                     \
             reinterpret_cast<uint32_t**>(symm_mem->get_signal_pad_ptrs_dev()), \
             symm_mem->get_rank(),                                              \
             symm_mem->get_world_size());                                       \
-    C10_CUDA_KERNEL_LAUNCH_CHECK();                                            \
+    C10_HIP_KERNEL_LAUNCH_CHECK();                                            \
   }
 
   AT_DISPATCH_SWITCH(
@@ -222,8 +223,8 @@ at::Tensor multimem_one_shot_all_reduce(
 
 #define DISPATCH(scalar_t, kernel_alignment)                                   \
   if (alignment == kernel_alignment) {                                         \
-    multimem_one_shot_all_reduce_kernel<scalar_t, kernel_alignment>            \
-        <<<num_blocks, num_threads, 0, at::cuda::getCurrentCUDAStream()>>>(    \
+   hipLaunchKernelGGL(( multimem_one_shot_all_reduce_kernel<scalar_t, kernel_alignment>)            \
+        , dim3(num_blocks), dim3(num_threads), 0, at::hip::getCurrentHIPStreamMasqueradingAsCUDA(),     \
             reinterpret_cast<scalar_t*>(symm_mem->get_multicast_ptr()) +       \
                 input.storage_offset(),                                        \
             output.data_ptr<scalar_t>(),                                       \
@@ -231,7 +232,7 @@ at::Tensor multimem_one_shot_all_reduce(
             reinterpret_cast<uint32_t**>(symm_mem->get_signal_pad_ptrs_dev()), \
             symm_mem->get_rank(),                                              \
             symm_mem->get_world_size());                                       \
-    C10_CUDA_KERNEL_LAUNCH_CHECK();                                            \
+    C10_HIP_KERNEL_LAUNCH_CHECK();                                            \
   }
 
   AT_DISPATCH_SWITCH(

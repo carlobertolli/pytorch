@@ -202,8 +202,8 @@ namespace policies {
 
 // Assumption:
 // all tensors are contiguous, that is: stride == sizeof(type) for all tensors
-template<typename data_t, typename inp_calc_t, typename out_calc_t, typename loader_t, typename storer_t, int num_outputs = 1>
-struct unroll {
+template<int thread_work_size, int num_threads, int block_work_size, typename data_t, typename inp_calc_t, typename out_calc_t, typename loader_t, typename storer_t, int num_outputs = 1>
+struct unroll_parametrized {
 
   data_t data;
   int remaining;
@@ -212,11 +212,11 @@ struct unroll {
   loader_t loader;
   storer_t storer;
 
-  __device__ unroll(data_t data, int remaining, inp_calc_t ic, out_calc_t oc, loader_t l, storer_t s):
+  __device__ unroll_parametrized(data_t data, int remaining, inp_calc_t ic, out_calc_t oc, loader_t l, storer_t s):
     data(data), remaining(remaining), input_offset_calculator(ic), output_offset_calculator(oc), loader(l), storer(s) {}
 
   __device__ inline bool check_inbounds(int thread_work_elem) {
-    return ((int)(threadIdx.x  + thread_work_elem*num_threads()) < remaining);
+    return ((int)(threadIdx.x  + thread_work_elem*num_threads) < remaining);
   }
 
   template<typename args_t>
@@ -224,14 +224,13 @@ struct unroll {
     constexpr int arity = std::tuple_size<args_t>::value;
     int thread_idx = threadIdx.x;
     #pragma unroll
-    for (int i = 0; i < thread_work_size(); i++) {
-      if (thread_idx >= remaining) {
-        return;
+    for (int i = 0; i < thread_work_size; i++) {
+      if (thread_idx < remaining) {
+        int linear_idx = thread_idx + block_work_size * idx;
+        auto offset = input_offset_calculator.get(linear_idx);
+        detail::static_unroll<detail::unroll_load_helper, arity>::with_args(*this, args, offset, loader, i, num_outputs);
+        thread_idx += num_threads;
       }
-      int linear_idx = thread_idx + block_work_size() * idx;
-      auto offset = input_offset_calculator.get(linear_idx);
-      detail::static_unroll<detail::unroll_load_helper, arity>::with_args(*this, args, offset, loader, i, num_outputs);
-      thread_idx += num_threads();
     }
   }
 
@@ -239,17 +238,22 @@ struct unroll {
   __device__ inline void store(scalar_t *from, int idx) {
     int thread_idx = threadIdx.x;
     #pragma unroll
-    for (int i = 0; i < thread_work_size(); i++) {
-      if (thread_idx >= remaining) {
-        return;
+    for (int i = 0; i < thread_work_size; i++) {
+      if (thread_idx < remaining) {
+        int linear_idx = thread_idx + block_work_size * idx;
+        int offset = output_offset_calculator.get(linear_idx)[0];
+        storer.store(from[i], data[0], offset);
+        thread_idx += num_threads;
       }
-      int linear_idx = thread_idx + block_work_size() * idx;
-      int offset = output_offset_calculator.get(linear_idx)[0];
-      storer.store(from[i], data[0], offset);
-      thread_idx += num_threads();
     }
   }
 };
+
+
+// Assumption:
+// all tensors are contiguous, that is: stride == sizeof(type) for all tensors
+template<typename data_t, typename inp_calc_t, typename out_calc_t, typename loader_t, typename storer_t, int num_outputs = 1>
+using unroll = unroll_parametrized<thread_work_size(), num_threads(), block_work_size(), data_t, inp_calc_t, out_calc_t, loader_t, storer_t, num_outputs>;
 
 // Assumption:
 // all tensors are contiguous, that is: stride == sizeof(type) for all tensors

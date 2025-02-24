@@ -1,8 +1,9 @@
+#include "hip/hip_runtime.h"
 #include <torch/csrc/distributed/c10d/intra_node_comm.hpp>
 
 #include <ATen/Dispatch.h>
-#include <ATen/cuda/CUDAContext.h>
-#include <c10/cuda/CUDAGuard.h>
+#include <ATen/hip/HIPContext.h>
+#include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
 
 namespace c10d {
 namespace intra_node_comm {
@@ -17,23 +18,23 @@ static constexpr size_t kOneShotThreshBytes = 256 * 1024;
 static constexpr size_t kTwoShotThreshBytes = 10 * 1024 * 1024;
 
 #if defined(USE_ROCM)
-using __nv_bfloat162 = uint32_t;
+using __hip_bfloat162 = uint32_t;
 #endif
 
 struct __align__(16) bf16x8 {
-  __nv_bfloat162 vals[4];
+  __hip_bfloat162 vals[4];
 };
 
 #define DEVICE_INLINE __device__ inline __attribute__((always_inline))
 
-DEVICE_INLINE __nv_bfloat162
-bf16hadd2(const __nv_bfloat162 x, const __nv_bfloat162 y) {
+DEVICE_INLINE __hip_bfloat162
+bf16hadd2(const __hip_bfloat162 x, const __hip_bfloat162 y) {
 #if defined(USE_ROCM)
   CUDA_KERNEL_ASSERT(false);
   return 0;
 #elif (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ < 800))
   CUDA_KERNEL_ASSERT(false);
-  __nv_bfloat162 res;
+  __hip_bfloat162 res;
   return res;
 #else
   return __hadd2(x, y);
@@ -477,9 +478,9 @@ static void getLaunchConfig(
     auto warpsRequired = N_aligned / numelPerWarp;
     auto threadsRequired = N_aligned / numelPerThread;
     blocks.x =
-        std::min(divUp(threadsRequired, kThreadsPerBlock), kMaxAllReduceBlocks);
+        ::min(divUp(threadsRequired, kThreadsPerBlock), kMaxAllReduceBlocks);
     auto warpsPerBlock = divUp(warpsRequired, blocks.x);
-    threads.x = std::min(kThreadsPerBlock, warpsPerBlock * kWarpSize);
+    threads.x = ::min(kThreadsPerBlock, warpsPerBlock * kWarpSize);
   }
 }
 
@@ -493,8 +494,8 @@ bool isIntraNodeCommSupported() {
 
 void* initP2pState() {
   void* state = nullptr;
-  AT_CUDA_CHECK(cudaMalloc(&state, sizeof(P2pState)));
-  AT_CUDA_CHECK(cudaMemset(state, 0, sizeof(P2pState)));
+  AT_CUDA_CHECK(hipMalloc(&state, sizeof(P2pState)));
+  AT_CUDA_CHECK(hipMemset(state, 0, sizeof(P2pState)));
   return state;
 }
 
@@ -506,15 +507,15 @@ void* initTopoInfo(Topology topology, NvlMesh nvlMesh, size_t rank) {
   auto hcm = getHybridCubeMesh(nvlMesh);
   int hcmInfo[4];
   std::copy((*hcm)[rank].begin(), (*hcm)[rank].begin() + 4, hcmInfo);
-  AT_CUDA_CHECK(cudaMalloc(&topoInfo, sizeof(hcmInfo)));
+  AT_CUDA_CHECK(hipMalloc(&topoInfo, sizeof(hcmInfo)));
   AT_CUDA_CHECK(
-      cudaMemcpy(topoInfo, hcmInfo, sizeof(hcmInfo), cudaMemcpyHostToDevice));
+      hipMemcpy(topoInfo, hcmInfo, sizeof(hcmInfo), hipMemcpyHostToDevice));
   return topoInfo;
 }
 
 at::Tensor IntraNodeComm::oneShotAllReduce(
     const at::Tensor& input,
-    at::cuda::CUDAStream& stream) {
+    at::hip::HIPStreamMasqueradingAsCUDA& stream) {
   checkInput(input, deviceIdx_);
 
   const size_t numelPerWarp =
@@ -526,26 +527,26 @@ at::Tensor IntraNodeComm::oneShotAllReduce(
   dim3 blocks, threads;
   getLaunchConfig(N_aligned, input.element_size(), blocks, threads);
 
-  at::cuda::OptionalCUDAGuard guard(input.get_device());
+  at::hip::OptionalHIPGuardMasqueradingAsCUDA guard(input.get_device());
 
   // When the input data is small, copying inside the kernel is faster. Because
-  // in such cases, the launch overhead of cudaMemcpyAsync outweighs its
+  // in such cases, the launch overhead of hipMemcpyAsync outweighs its
   // efficiency. Here we consider the input data to be small if the copy loop
   // can finish in a single iteration.
   const bool fuseInputCopy = isAligned && blocks.x < kMaxAllReduceBlocks;
   if (!fuseInputCopy) {
-    AT_CUDA_CHECK(cudaMemcpyAsync(
+    AT_CUDA_CHECK(hipMemcpyAsync(
         symmetricMemory_->get_buffer_ptrs()[rank_],
         input.data_ptr(),
         input.numel() * input.element_size(),
-        cudaMemcpyDeviceToDevice,
+        hipMemcpyDeviceToDevice,
         stream));
   }
 
 #define X(kWorldSize, kAligned)                            \
   if (worldSize_ == kWorldSize) {                          \
-    oneShotAllReduceKernel<kWorldSize, kAligned>           \
-        <<<blocks, threads, 0, stream>>>(                  \
+   hipLaunchKernelGGL(( oneShotAllReduceKernel<kWorldSize, kAligned>)           \
+        , dim3(blocks), dim3(threads), 0, stream,                   \
             input.data_ptr<at::BFloat16>(),                \
             input.numel(),                                 \
             N_aligned,                                     \
@@ -553,7 +554,7 @@ at::Tensor IntraNodeComm::oneShotAllReduce(
             reinterpret_cast<at::BFloat16**>(buffersDev_), \
             rank_,                                         \
             fuseInputCopy);                                \
-    C10_CUDA_KERNEL_LAUNCH_CHECK();                        \
+    C10_HIP_KERNEL_LAUNCH_CHECK();                        \
   }
 
 #define DISPATCH_ALL_WORLD_SIZES(kAligned) \
@@ -578,7 +579,7 @@ at::Tensor IntraNodeComm::oneShotAllReduce(
 
 at::Tensor IntraNodeComm::twoShotAllReduce(
     const at::Tensor& input,
-    at::cuda::CUDAStream& stream) {
+    at::hip::HIPStreamMasqueradingAsCUDA& stream) {
   checkInput(input, deviceIdx_);
 
   size_t numelPerWarp = kBytesPerThread / input.element_size() * kWarpSize;
@@ -593,23 +594,23 @@ at::Tensor IntraNodeComm::twoShotAllReduce(
       ? input
       : input.new_empty(N_aligned);
 
-  at::cuda::OptionalCUDAGuard guard(input.get_device());
-  AT_CUDA_CHECK(cudaMemcpyAsync(
+  at::hip::OptionalHIPGuardMasqueradingAsCUDA guard(input.get_device());
+  AT_CUDA_CHECK(hipMemcpyAsync(
       symmetricMemory_->get_buffer_ptrs()[rank_],
       input.data_ptr(),
       input.numel() * input.element_size(),
-      cudaMemcpyDeviceToDevice,
+      hipMemcpyDeviceToDevice,
       stream));
 
 #define X(kWorldSize)                                                   \
   if (worldSize_ == kWorldSize) {                                       \
-    twoShotAllReduceKernel<kWorldSize><<<blocks, threads, 0, stream>>>( \
+   hipLaunchKernelGGL(( twoShotAllReduceKernel<kWorldSize>), dim3(blocks), dim3(threads), 0, stream,  \
         output.data_ptr<at::BFloat16>(),                                \
         N_aligned,                                                      \
         reinterpret_cast<P2pState**>(p2pStatesDev_),                    \
         reinterpret_cast<at::BFloat16**>(buffersDev_),                  \
         rank_);                                                         \
-    C10_CUDA_KERNEL_LAUNCH_CHECK();                                     \
+    C10_HIP_KERNEL_LAUNCH_CHECK();                                     \
   }
   X(2);
   X(3);
@@ -621,11 +622,11 @@ at::Tensor IntraNodeComm::twoShotAllReduce(
 #undef X
 
   if (output.data_ptr() != input.data_ptr()) {
-    AT_CUDA_CHECK(cudaMemcpyAsync(
+    AT_CUDA_CHECK(hipMemcpyAsync(
         input.data_ptr(),
         output.data_ptr(),
         input.numel() * input.element_size(),
-        cudaMemcpyDeviceToDevice,
+        hipMemcpyDeviceToDevice,
         stream));
   }
   return input;
@@ -633,7 +634,7 @@ at::Tensor IntraNodeComm::twoShotAllReduce(
 
 at::Tensor IntraNodeComm::hybridCubeMeshAllReduce(
     const at::Tensor& input,
-    at::cuda::CUDAStream& stream) {
+    at::hip::HIPStreamMasqueradingAsCUDA& stream) {
   checkInput(input, deviceIdx_);
 
   size_t numelPerWarp = kBytesPerThread / input.element_size() * kWarpSize;
@@ -643,16 +644,16 @@ at::Tensor IntraNodeComm::hybridCubeMeshAllReduce(
   dim3 blocks, threads;
   getLaunchConfig(N_aligned, input.element_size(), blocks, threads);
 
-  at::cuda::OptionalCUDAGuard guard(input.get_device());
-  AT_CUDA_CHECK(cudaMemcpyAsync(
+  at::hip::OptionalHIPGuardMasqueradingAsCUDA guard(input.get_device());
+  AT_CUDA_CHECK(hipMemcpyAsync(
       symmetricMemory_->get_buffer_ptrs()[rank_],
       input.data_ptr(),
       input.numel() * input.element_size(),
-      cudaMemcpyDeviceToDevice,
+      hipMemcpyDeviceToDevice,
       stream));
 
 #define X(kAligned)                                                        \
-  hybridCubeMeshAllReduceKernel<kAligned><<<blocks, threads, 0, stream>>>( \
+ hipLaunchKernelGGL(( hybridCubeMeshAllReduceKernel<kAligned>), dim3(blocks), dim3(threads), 0, stream,  \
       input.data_ptr<at::BFloat16>(),                                      \
       input.numel(),                                                       \
       N_aligned,                                                           \
@@ -661,7 +662,7 @@ at::Tensor IntraNodeComm::hybridCubeMeshAllReduce(
       static_cast<int*>(topoInfo_),                                        \
       bufferSize_,                                                         \
       rank_);                                                              \
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  C10_HIP_KERNEL_LAUNCH_CHECK();
 
   if (N_aligned == static_cast<size_t>(input.numel())) {
     X(true);
@@ -715,8 +716,8 @@ at::Tensor IntraNodeComm::allReduce(
   // Report usage for testing purposes.
   // We don't care about overflowing.
   ++usageCounter;
-  auto stream = at::cuda::getCurrentCUDAStream();
-  c10::cuda::CUDACachingAllocator::recordStream(
+  auto stream = at::hip::getCurrentHIPStreamMasqueradingAsCUDA();
+  c10::hip::HIPCachingAllocatorMasqueradingAsCUDA::recordStreamMasqueradingAsCUDA(
       input.storage().data_ptr(), stream);
   switch (algo) {
     case AllReduceAlgo::ONE_SHOT:
@@ -747,7 +748,7 @@ static __global__ void barrierKernel(
 }
 
 void IntraNodeComm::barrier(std::optional<std::vector<int64_t>> ranks) {
-  barrierReady_.block(at::cuda::getCurrentCUDAStream());
+  barrierReady_.block(at::hip::getCurrentHIPStreamMasqueradingAsCUDA());
   if (!ranks.has_value()) {
     ranks = std::vector<int64_t>(worldSize_);
     std::iota(ranks->begin(), ranks->end(), 0);
@@ -757,9 +758,9 @@ void IntraNodeComm::barrier(std::optional<std::vector<int64_t>> ranks) {
     TORCH_CHECK(r >= 0 && r < static_cast<int64_t>(worldSize_));
     mask |= (1ULL << r);
   }
-  barrierKernel<<<1, kWarpSize, 0, at::cuda::getCurrentCUDAStream()>>>(
+ hipLaunchKernelGGL(( barrierKernel), dim3(1), dim3(kWarpSize), 0, at::hip::getCurrentHIPStreamMasqueradingAsCUDA(), 
       reinterpret_cast<P2pState**>(p2pStatesDev_), mask, rank_, worldSize_);
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  C10_HIP_KERNEL_LAUNCH_CHECK();
   barrierReady_.record();
 }
 

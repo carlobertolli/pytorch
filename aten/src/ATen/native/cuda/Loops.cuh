@@ -92,6 +92,34 @@ __device__ inline void templated_elementwise_kernel_helper(func_t f, policy_t po
   policy.store(results, idx);
 }
 
+
+template<int thread_work_size = thread_work_size(), typename func_t, typename policy_t>
+__device__ inline void templated_unrolled_elementwise_kernel_helper(func_t f, policy_t policy) {
+  using traits = function_traits<func_t>;
+  using return_t = typename traits::result_type;
+  using args_t = typename traits::ArgsTuple;
+
+  int idx = blockIdx.x;
+
+  return_t results[thread_work_size];
+  args_t args[thread_work_size];
+
+  // load
+  policy.templatedLoad(args, idx);
+
+  // compute
+  #pragma unroll
+  for (int i = 0; i < thread_work_size; i++) {
+    if (policy.check_inbounds(i)) {
+      results[i] = c10::guts::apply(f, args[i]);
+    }
+  }
+
+  // store
+  policy.templatedStore(results, idx);
+}
+
+
 }}  // namespace at::native
 
 #include <ATen/native/cuda/CUDALoops.cuh>

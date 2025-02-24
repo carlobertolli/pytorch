@@ -1,11 +1,11 @@
 #if !defined(USE_ROCM) && defined(PYTORCH_C10_DRIVER_API_SUPPORTED)
 #include <torch/csrc/distributed/c10d/DMAConnectivity.hpp>
 
-#include <c10/cuda/CUDAException.h>
+#include <c10/hip/HIPException.h>
 #include <c10/cuda/driver_api.h>
 
-#include <cuda_runtime.h>
-#include <nvml.h>
+#include <hip/hip_runtime.h>
+#include <rocm_smi/rocm_smi.h>
 
 namespace {
 
@@ -13,8 +13,8 @@ constexpr int max_nvlinks = 64;
 
 std::string get_bus_id(int device_idx) {
   char bus_id[80];
-  cudaDeviceProp prop{};
-  C10_CUDA_CHECK(cudaGetDeviceProperties(&prop, device_idx));
+  hipDeviceProp_t prop{};
+  C10_HIP_CHECK(hipGetDeviceProperties(&prop, device_idx));
   snprintf(
       bus_id,
       sizeof(bus_id),
@@ -28,7 +28,7 @@ std::string get_bus_id(int device_idx) {
 struct C10_EXPORT NVLinkDetector : public c10d::DMAConnectivityDetector {
   c10::intrusive_ptr<c10d::DMAConnectivity> detect() override {
     int num_devices;
-    C10_CUDA_CHECK(cudaGetDeviceCount(&num_devices));
+    C10_HIP_CHECK(hipGetDeviceCount(&num_devices));
 
     std::vector<std::vector<int>> matrix;
     matrix.reserve(num_devices);
@@ -47,23 +47,23 @@ struct C10_EXPORT NVLinkDetector : public c10d::DMAConnectivityDetector {
     }
 
     // Obtain the nvml device for all bus_ids
-    auto driver_api = c10::cuda::DriverAPI::get();
-    std::vector<nvmlDevice_t> nvml_devices(num_devices, nullptr);
+    auto driver_api = c10::hip::DriverAPI::get();
+    std::vector<uint32_t> nvml_devices(num_devices, nullptr);
     for (int i = 0; i < num_devices; ++i) {
       TORCH_CHECK_EQ(
           driver_api->nvmlDeviceGetHandleByPciBusId_v2_(
               bus_ids[i].c_str(), &nvml_devices[i]),
-          NVML_SUCCESS);
+          RSMI_STATUS_SUCCESS);
     }
 
     std::vector<int> switch_link_count(num_devices, 0);
     for (int i = 0; i < num_devices; ++i) {
       for (int link = 0; link < max_nvlinks; ++link) {
-        nvmlReturn_t ret;
+        rsmi_status_t ret;
         nvmlIntNvLinkDeviceType_t deviceType;
         ret = driver_api->nvmlDeviceGetNvLinkRemoteDeviceType_(
             nvml_devices[i], link, &deviceType);
-        if (ret != NVML_SUCCESS) {
+        if (ret != RSMI_STATUS_SUCCESS) {
           // We've exhausted the NVLinks connected to this device. This error
           // is benign. There doesn't seem to be a reliable way to obtain the
           // maximum link value that can be passed to the API. Therefore, we
@@ -77,7 +77,7 @@ struct C10_EXPORT NVLinkDetector : public c10d::DMAConnectivityDetector {
           TORCH_CHECK_EQ(
               driver_api->nvmlDeviceGetNvLinkRemotePciInfo_v2_(
                   nvml_devices[i], link, &pciInfo),
-              NVML_SUCCESS);
+              RSMI_STATUS_SUCCESS);
           auto it = bus_id_to_device_idx.find(pciInfo.busId);
           if (it != bus_id_to_device_idx.end()) {
             if (i != it->second) {

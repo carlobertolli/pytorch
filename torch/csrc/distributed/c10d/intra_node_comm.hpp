@@ -1,8 +1,8 @@
 #pragma once
 
 #include <ATen/ATen.h>
-#include <ATen/cuda/CUDAEvent.h>
-#include <c10/cuda/CUDAStream.h>
+#include <ATen/hip/HIPEvent.h>
+#include <ATen/hip/impl/HIPStreamMasqueradingAsCUDA.h>
 #include <torch/csrc/distributed/c10d/Store.hpp>
 #include <torch/csrc/distributed/c10d/SymmetricMemory.hpp>
 #include <torch/csrc/distributed/c10d/Work.hpp>
@@ -81,15 +81,15 @@ class TORCH_API IntraNodeComm : public c10::intrusive_ptr_target {
  private:
   at::Tensor oneShotAllReduce(
       const at::Tensor& input,
-      at::cuda::CUDAStream& stream);
+      at::hip::HIPStreamMasqueradingAsCUDA& stream);
 
   at::Tensor twoShotAllReduce(
       const at::Tensor& input,
-      at::cuda::CUDAStream& stream);
+      at::hip::HIPStreamMasqueradingAsCUDA& stream);
 
   at::Tensor hybridCubeMeshAllReduce(
       const at::Tensor& input,
-      at::cuda::CUDAStream& stream);
+      at::hip::HIPStreamMasqueradingAsCUDA& stream);
 
   c10::intrusive_ptr<Store> store_;
   size_t rank_;
@@ -139,7 +139,7 @@ class IntraNodeCommWork : public c10d::Work {
   }
 
   bool wait(std::chrono::milliseconds timeout = kNoTimeout) override {
-    event_.block(at::cuda::getCurrentCUDAStream());
+    event_.block(at::hip::getCurrentHIPStreamMasqueradingAsCUDA());
     return true;
   }
 
