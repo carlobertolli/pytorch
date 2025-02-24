@@ -17,8 +17,8 @@
 #include <torch/csrc/utils/pythoncapi_compat.h>
 #include <torch/extension.h>
 
-#ifdef USE_CUDA
-#include <ATen/cuda/EmptyTensor.h>
+#ifdef USE_ROCM
+#include <ATen/hip/EmptyTensor.h>
 #endif
 
 #ifdef USE_XPU
@@ -789,7 +789,7 @@ inline static PyObject* _empty_strided_device(
     return THPVariable_Wrap(
         at::detail::empty_strided_cpu(sizes, strides, dtype));
   }
-#ifdef USE_CUDA
+#ifdef USE_ROCM
   else if (device_type == c10::DeviceType::CUDA) {
     return THPVariable_Wrap(at::detail::empty_strided_cuda(
         sizes, strides, dtype, c10::DeviceType::CUDA));

@@ -97,6 +97,19 @@ struct unroll_load_helper {
   }
 };
 
+template<int arg_index>
+struct unroll_load_helper_templated {
+  template <typename args_t, typename policy_t, typename offset_t, typename loader_t>
+  static __device__ void apply(policy_t &self, args_t *args, offset_t offset, loader_t loader, int j, int num_outputs) {
+    // type instantiation has already been done on the host based on argument runtime types.
+    // Here, the argument index is enough to retrieve the type from the load variadic template argument.
+    // using arg_t = std::tuple_element_t<arg_index, args_t>;
+    // `data` hold the data_ptr for tensors [output, input0, input1, ...], so we
+    // need a +1 offset to get the input
+    std::get<arg_index>(args[j]) = loader.template load<arg_index>(self.data[arg_index + num_outputs], offset[arg_index]);
+  }
+};
+
 template <int current>
 struct multi_outputs_store_helper {
   template<int ntensors, int num_outputs, typename ...Args>
@@ -171,6 +184,28 @@ struct StoreWithCast {
   __device__ void store(scalar_t value, char *base_ptr, uint32_t offset, int arg = 0) {
     void *ptr = base_ptr + element_sizes[arg] * offset;
     c10::cast_and_store<scalar_t>(dtypes[arg], ptr, value);
+  }
+};
+
+template<typename CastToT, typename... CastFromTs>
+struct TemplatedLoad {
+  template<int arg_index>
+  __device__ CastToT load(char *base_ptr, uint32_t offset) {
+    // extract the arg_index-th input tensor element type from the
+    // variadic template argument.
+    using CastFromT = std::tuple_element_t<arg_index,
+        std::tuple<CastFromTs...>>;
+    void *ptr = base_ptr + sizeof(CastFromT) * offset;
+    return c10::convert<CastToT>(c10::load<CastFromT>(ptr));
+  }
+};
+
+// This only supports a single output tensors.
+template<typename CastTo, typename CastFrom>
+struct TemplatedStore {
+  __device__ void store(CastFrom value, char *base_ptr, uint32_t offset, int arg=0) {
+    void *ptr = base_ptr + sizeof(CastTo) * offset;
+    *(CastTo*)ptr = c10::convert<CastTo>(value);
   }
 };
 
@@ -250,6 +285,92 @@ struct unroll {
     }
   }
 };
+
+// Assumption:
+// all tensors are contiguous, that is: stride == sizeof(type) for all tensors
+template<int thread_work_size, int num_threads, int block_work_size, typename data_t, typename inp_calc_t, typename out_calc_t, typename loader_t, typename storer_t, int num_outputs = 1>
+struct unroll_parametrized {
+
+  data_t data;
+  int remaining;
+  inp_calc_t input_offset_calculator;
+  out_calc_t output_offset_calculator;
+  loader_t loader;
+  storer_t storer;
+
+  __device__ unroll_parametrized(data_t data, int remaining, inp_calc_t ic, out_calc_t oc, loader_t l, storer_t s):
+    data(data), remaining(remaining), input_offset_calculator(ic), output_offset_calculator(oc), loader(l), storer(s) {}
+
+  __device__ inline bool check_inbounds(int thread_work_elem) {
+    return ((int)(threadIdx.x  + thread_work_elem*num_threads) < remaining);
+  }
+
+#if 0
+  template<typename args_t>
+  __device__ inline void load(args_t *args, int idx) {
+    constexpr int arity = std::tuple_size<args_t>::value;
+    int thread_idx = threadIdx.x;
+    #pragma unroll
+    for (int i = 0; i < thread_work_size; i++) {
+      if (thread_idx < remaining) {
+//        return;
+  //    }
+      int linear_idx = thread_idx + block_work_size * idx;
+      auto offset = input_offset_calculator.get(linear_idx);
+      detail::static_unroll<detail::unroll_load_helper, arity>::with_args(*this, args, offset, loader, i, num_outputs);
+      thread_idx += num_threads;
+    }
+    }
+  }
+
+  template<typename scalar_t>
+  __device__ inline void store(scalar_t *from, int idx) {
+    int thread_idx = threadIdx.x;
+    #pragma unroll
+    for (int i = 0; i < thread_work_size; i++) {
+      if (thread_idx < remaining) {
+//        return;
+//      }
+      int linear_idx = thread_idx + block_work_size * idx;
+      int offset = output_offset_calculator.get(linear_idx)[0];
+      storer.store(from[i], data[0], offset);
+      thread_idx += num_threads;
+    }
+    }
+  }
+#endif
+ // Load and store used for interleaving: no bound checks (moved to callers) to prevent
+  // extra basic blocks; use templated version of load/store.
+  template<typename args_t>
+  __device__ inline void templatedLoad(args_t *args, int idx) {
+    constexpr int arity = std::tuple_size<args_t>::value;
+    int thread_idx = threadIdx.x;
+    #pragma unroll
+    for (int i = 0; i < thread_work_size; i++) {
+      if (thread_idx < remaining) {
+        int linear_idx = thread_idx + block_work_size * idx;
+        auto offset = input_offset_calculator.get(linear_idx);
+        detail::static_unroll<detail::unroll_load_helper_templated, arity>::with_args(*this, args, offset, loader, i, num_outputs);
+        thread_idx += num_threads;
+      }
+    }
+  }
+
+  template<typename scalar_t>
+  __device__ inline void templatedStore(scalar_t *from, int idx) {
+    int thread_idx = threadIdx.x;
+    #pragma unroll
+    for (int i = 0; i < thread_work_size; i++) { 
+      if (thread_idx < remaining) {
+        int linear_idx = thread_idx + block_work_size * idx;
+        int offset = output_offset_calculator.get(linear_idx)[0];
+        storer.store(from[i], data[0], offset);
+        thread_idx += num_threads;
+      }
+    }
+  }
+};
+
 
 // Assumption:
 // all tensors are contiguous, that is: stride == sizeof(type) for all tensors

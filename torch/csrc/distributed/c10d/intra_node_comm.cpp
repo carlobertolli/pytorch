@@ -1,7 +1,7 @@
 #include <torch/csrc/distributed/c10d/intra_node_comm.hpp>
 
-#include <ATen/cuda/CUDAContext.h>
-#include <c10/cuda/CUDAGuard.h>
+#include <ATen/hip/HIPContext.h>
+#include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
 #include <c10/util/Logging.h>
 #include <torch/csrc/distributed/c10d/Utils.hpp>
 
@@ -17,10 +17,10 @@
 
 #if !defined(USE_ROCM) && defined(PYTORCH_C10_DRIVER_API_SUPPORTED)
 #include <c10/cuda/driver_api.h>
-#include <nvml.h>
+#include <rocm_smi/rocm_smi.h>
 #endif
 
-#include <cuda_runtime.h>
+#include <hip/hip_runtime.h>
 
 namespace c10d::intra_node_comm {
 
@@ -77,7 +77,7 @@ static bool isSame(NvlMesh lhs, NvlMesh rhs) {
  */
 static NvlMesh getNvlMesh(const std::vector<std::string>& rankToBusId) {
 #if !defined(USE_ROCM) && defined(PYTORCH_C10_DRIVER_API_SUPPORTED)
-  using namespace c10::cuda;
+  using namespace c10::hip;
 
   NvlMesh nvlMesh = {};
   auto driverApi = DriverAPI::get();
@@ -86,7 +86,7 @@ static NvlMesh getNvlMesh(const std::vector<std::string>& rankToBusId) {
   }
 
   const auto worldSize = rankToBusId.size();
-  std::vector<nvmlDevice_t> devices(worldSize, nullptr);
+  std::vector<uint32_t> devices(worldSize, nullptr);
   std::unordered_map<std::string, size_t> busIdToRank;
   std::vector<size_t> switchLinkCount(worldSize, 0);
 
@@ -94,7 +94,7 @@ static NvlMesh getNvlMesh(const std::vector<std::string>& rankToBusId) {
     busIdToRank.emplace(rankToBusId[r], r);
     TORCH_CHECK(
         driverApi->nvmlDeviceGetHandleByPciBusId_v2_(
-            rankToBusId[r].c_str(), &devices[r]) == NVML_SUCCESS);
+            rankToBusId[r].c_str(), &devices[r]) == RSMI_STATUS_SUCCESS);
   }
 
   // TODO: find a better way to determine this
@@ -103,11 +103,11 @@ static NvlMesh getNvlMesh(const std::vector<std::string>& rankToBusId) {
   // For each device, loop over devices connected to it via NVLink
   for (size_t idx = 0; idx < worldSize; ++idx) {
     for (size_t link = 0; link < kMaxNvLinks; ++link) {
-      nvmlReturn_t ret;
+      rsmi_status_t ret;
       nvmlIntNvLinkDeviceType_t deviceType;
       ret = driverApi->nvmlDeviceGetNvLinkRemoteDeviceType_(
           devices[idx], link, &deviceType);
-      if (ret != NVML_SUCCESS) {
+      if (ret != RSMI_STATUS_SUCCESS) {
         // We've exhausted the NVLinks connected to this device.
         // This error is benign. There doesn't seem to be a reliable
         // way to obtain the maximum link value that can be passed to
@@ -120,7 +120,7 @@ static NvlMesh getNvlMesh(const std::vector<std::string>& rankToBusId) {
         nvmlPciInfo_t pciInfo;
         ret = driverApi->nvmlDeviceGetNvLinkRemotePciInfo_v2_(
             devices[idx], link, &pciInfo);
-        if (ret != NVML_SUCCESS) {
+        if (ret != RSMI_STATUS_SUCCESS) {
           // Unexpected error. Return an empty NvlMesh
           return {};
         }
@@ -280,8 +280,8 @@ bool IntraNodeComm::rendezvous() {
     return false;
   }
 
-  deviceIdx_ = at::cuda::current_device();
-  c10::cuda::CUDAGuard guard(deviceIdx_);
+  deviceIdx_ = at::hip::current_device();
+  c10::hip::HIPGuardMasqueradingAsCUDA guard(deviceIdx_);
 
   // First hand shake: exchange hostname and device bus ID
   struct DevInfo {
@@ -291,8 +291,8 @@ bool IntraNodeComm::rendezvous() {
 
   DevInfo devInfo{};
   gethostname(devInfo.hostname, sizeof(devInfo.hostname));
-  cudaDeviceProp prop{};
-  AT_CUDA_CHECK(cudaGetDeviceProperties(&prop, deviceIdx_));
+  hipDeviceProp_t prop{};
+  AT_CUDA_CHECK(hipGetDeviceProperties(&prop, deviceIdx_));
   snprintf(
       devInfo.busId,
       sizeof(devInfo.busId),
