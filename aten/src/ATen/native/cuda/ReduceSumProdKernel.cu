@@ -43,17 +43,17 @@ struct sum_functor<c10::complex<at::Half>> {
       return a + b;
     }
     );
-    jitted_gpu_reduce_kernel<sum_name, scalar_t, scalar_t>(
-        iter, func, 0.);
+    // jitted_gpu_reduce_kernel<sum_name, scalar_t, scalar_t>(
+    //     iter, func, 0.);
   }
 #else
   void operator()(TensorIterator& iter) {
     using scalar_t = c10::complex<at::Half>;
     using acc_t = at::opmath_type<scalar_t>;
-    gpu_reduce_kernel<scalar_t, scalar_t>(
-        iter, func_wrapper<scalar_t>([] GPU_LAMBDA(acc_t a, acc_t b) -> acc_t {
-          return a + b;
-        }), acc_t{0.});
+    // gpu_reduce_kernel<scalar_t, scalar_t>(
+    //     iter, func_wrapper<scalar_t>([] GPU_LAMBDA(acc_t a, acc_t b) -> acc_t {
+    //       return a + b;
+    //     }), acc_t{0.});
   }
 #endif
 };
@@ -61,8 +61,8 @@ struct sum_functor<c10::complex<at::Half>> {
 template <typename scalar_t, typename acc_t = scalar_t, typename out_t = scalar_t>
 struct nansum_functor {
   void operator()(TensorIterator& iter) {
-    gpu_reduce_kernel<scalar_t, out_t>(
-        iter, NanSumOps<acc_t, out_t>{});
+    // gpu_reduce_kernel<scalar_t, out_t>(
+    //     iter, NanSumOps<acc_t, out_t>{});
   }
 };
 
@@ -76,14 +76,14 @@ struct nansum_functor_complex {
           return a + (std::isnan(b) ? arg_t{0.} : b);
         }
     );
-    jitted_gpu_reduce_kernel<nansum_name, scalar_t, scalar_t>(
-        iter, func, 0.);
+    // jitted_gpu_reduce_kernel<nansum_name, scalar_t, scalar_t>(
+    //     iter, func, 0.);
   }
 #else
   void operator()(TensorIterator& iter) {
     using acc_t = at::opmath_type<scalar_t>;
-    gpu_reduce_kernel<scalar_t, scalar_t>(
-        iter, NanSumOps<acc_t, acc_t>{});
+    // gpu_reduce_kernel<scalar_t, scalar_t>(
+    //     iter, NanSumOps<acc_t, acc_t>{});
   }
 #endif
 };
@@ -100,15 +100,15 @@ struct prod_functor {
       return a * b;
     }
     );
-    jitted_gpu_reduce_kernel<prod_name, scalar_t, out_t>(
-        iter, func, 1.);
+    // jitted_gpu_reduce_kernel<prod_name, scalar_t, out_t>(
+    //     iter, func, 1.);
   }
   #else
   void operator()(TensorIterator& iter) {
-    gpu_reduce_kernel<scalar_t, out_t>(
-        iter, func_wrapper<out_t>([] GPU_LAMBDA(acc_t a, acc_t b) -> acc_t {
-          return a * b;
-        }), 1.);
+    // gpu_reduce_kernel<scalar_t, out_t>(
+    //     iter, func_wrapper<out_t>([] GPU_LAMBDA(acc_t a, acc_t b) -> acc_t {
+    //       return a * b;
+    //     }), 1.);
   }
   #endif
 };
@@ -117,10 +117,10 @@ struct prod_functor {
 template <>
 struct prod_functor<bool> {
   void operator()(TensorIterator& iter) {
-    gpu_reduce_kernel<bool, bool>(
-        iter, func_wrapper<bool>([] GPU_LAMBDA(bool a, bool b) -> bool {
-          return a && b;
-        }), 1);
+    // gpu_reduce_kernel<bool, bool>(
+    //     iter, func_wrapper<bool>([] GPU_LAMBDA(bool a, bool b) -> bool {
+    //       return a && b;
+    //     }), 1);
   }
 };
 
@@ -134,17 +134,17 @@ struct prod_functor<c10::complex<at::Half>> {
     using scalar_t = c10::complex<at::Half>;
     std::string func =
         jiterator_stringify(arg_t combine(arg_t a, arg_t b) { return a * b; });
-    jitted_gpu_reduce_kernel<prod_name, scalar_t, scalar_t>(iter, func, 1.);
+    // jitted_gpu_reduce_kernel<prod_name, scalar_t, scalar_t>(iter, func, 1.);
   }
 #else
   void operator()(TensorIterator& iter) {
     using scalar_t = c10::complex<at::Half>;
     using acc_t = at::opmath_type<scalar_t>;
-    gpu_reduce_kernel<scalar_t, scalar_t>(
-        iter,
-        func_wrapper<scalar_t>(
-            [] GPU_LAMBDA(acc_t a, acc_t b) -> acc_t { return a * b; }),
-        acc_t{1.});
+    // gpu_reduce_kernel<scalar_t, scalar_t>(
+    //     iter,
+    //     func_wrapper<scalar_t>(
+    //         [] GPU_LAMBDA(acc_t a, acc_t b) -> acc_t { return a * b; }),
+    //     acc_t{1.});
   }
 #endif
 };
@@ -152,45 +152,45 @@ struct prod_functor<c10::complex<at::Half>> {
 template <typename scalar_t, typename enable = void>
 struct xor_sum_functor {
   void operator()(TensorIterator& iter) {
-    gpu_reduce_kernel<scalar_t, uint64_t>(
-        iter,
-        func_wrapper<uint64_t>(
-            [] GPU_LAMBDA(uint64_t a, uint64_t b) -> uint64_t {
-              return a ^ b;
-            }));
+    // gpu_reduce_kernel<scalar_t, uint64_t>(
+    //     iter,
+    //     func_wrapper<uint64_t>(
+    //         [] GPU_LAMBDA(uint64_t a, uint64_t b) -> uint64_t {
+    //           return a ^ b;
+    //         }));
   }
 };
 
 template <typename scalar_t>
 struct xor_sum_functor<scalar_t, std::enable_if_t<!std::is_integral_v<scalar_t>>> {
   void operator()(TensorIterator& iter) {
-    gpu_reduce_kernel<scalar_t, double>(
-        iter,
-        // implicitly upcast scalar_t to double
-        func_wrapper<double>([] GPU_LAMBDA(double a, double b) -> double {
-          union {
-            double d;
-            uint64_t u;
-          } a_converter, b_converter, result_converter;
+    // gpu_reduce_kernel<scalar_t, double>(
+    //     iter,
+    //     // implicitly upcast scalar_t to double
+    //     func_wrapper<double>([] GPU_LAMBDA(double a, double b) -> double {
+    //       union {
+    //         double d;
+    //         uint64_t u;
+    //       } a_converter, b_converter, result_converter;
 
-          a_converter.d = a;
-          b_converter.d = b;
-          result_converter.u = a_converter.u ^ b_converter.u;
-          // return a double, otherwise uint64_t will be cast to double
-          // when accumulating and the result will be wrong
-          return result_converter.d;
-        }));
+    //       a_converter.d = a;
+    //       b_converter.d = b;
+    //       result_converter.u = a_converter.u ^ b_converter.u;
+    //       // return a double, otherwise uint64_t will be cast to double
+    //       // when accumulating and the result will be wrong
+    //       return result_converter.d;
+    //     }));
   }
 };
 
 template <typename scalar_t>
 struct xor_sum_functor<scalar_t, std::enable_if_t<std::is_same_v<scalar_t, bool>>>  {
   void operator()(TensorIterator& iter) {
-    gpu_reduce_kernel<bool, uint64_t>(
-        iter, func_wrapper<uint64_t>([] GPU_LAMBDA(bool a, bool b) -> uint64_t {
-          // Bitcast to uint64_t after the XOR operation (using != for booleans)
-          return static_cast<uint64_t>(a != b);
-        }));
+    // gpu_reduce_kernel<bool, uint64_t>(
+    //     iter, func_wrapper<uint64_t>([] GPU_LAMBDA(bool a, bool b) -> uint64_t {
+    //       // Bitcast to uint64_t after the XOR operation (using != for booleans)
+    //       return static_cast<uint64_t>(a != b);
+    //     }));
   }
 };
 

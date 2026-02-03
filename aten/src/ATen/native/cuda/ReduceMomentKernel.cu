@@ -17,7 +17,7 @@ void std_var_kernel_impl(TensorIterator& iter, double correction, bool take_sqrt
   using accscalar_t = at::acc_type<scalar_t, true>;
   using ops_t = WelfordOps<scalar_t, accscalar_t, int32_t, thrust::pair<out_t, out_t>>;
   ops_t ops(static_cast<accscalar_t>(correction), take_sqrt);
-  gpu_reduce_kernel<scalar_t, out_t, 2>(iter, ops, typename ops_t::acc_t{});
+  // gpu_reduce_kernel<scalar_t, out_t, 2>(iter, ops, typename ops_t::acc_t{});
 }
 
 static void std_var_kernel_cuda(TensorIterator& iter, double correction, bool take_sqrt) {
@@ -43,9 +43,9 @@ void mean_kernel_impl(TensorIterator& iter) {
   using factor_t = typename c10::scalar_value_type<acc_t>::type;
   factor_t factor = static_cast<factor_t>(iter.num_output_elements()) / iter.numel();
   if constexpr (is_16_bits) {
-    gpu_reduce_kernel<scalar_t, out_t, /*vt0=*/4, /*input_vec_size=*/8>(iter, MeanOps<scalar_t, acc_t, factor_t, out_t> {factor});
+    // gpu_reduce_kernel<scalar_t, out_t, /*vt0=*/4, /*input_vec_size=*/8>(iter, MeanOps<scalar_t, acc_t, factor_t, out_t> {factor});
   } else {
-    gpu_reduce_kernel<scalar_t, out_t>(iter, MeanOps<scalar_t, acc_t, factor_t, out_t> {factor});
+    // gpu_reduce_kernel<scalar_t, out_t>(iter, MeanOps<scalar_t, acc_t, factor_t, out_t> {factor});
   }
 }
 

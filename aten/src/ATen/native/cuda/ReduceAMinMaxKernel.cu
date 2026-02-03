@@ -19,12 +19,12 @@ namespace at::native {
 
 template <typename scalar_t>
 void _min_max_values_kernel_cuda_impl(TensorIterator& iter) {
-  gpu_reduce_kernel<scalar_t, scalar_t>(
-      iter,
-      MinMaxOps<scalar_t, scalar_t, int32_t>{},
-      thrust::pair<scalar_t, scalar_t>(
-          at::numeric_limits<scalar_t>::upper_bound(),
-          at::numeric_limits<scalar_t>::lower_bound()));
+  // gpu_reduce_kernel<scalar_t, scalar_t>(
+  //     iter,
+  //     MinMaxOps<scalar_t, scalar_t, int32_t>{},
+  //     thrust::pair<scalar_t, scalar_t>(
+  //         at::numeric_limits<scalar_t>::upper_bound(),
+  //         at::numeric_limits<scalar_t>::lower_bound()));
 }
 
 void aminmax_allreduce_launch_kernel(TensorIterator& iter) {
@@ -37,12 +37,12 @@ void aminmax_allreduce_launch_kernel(TensorIterator& iter) {
 void aminmax_launch_kernel(TensorIterator& iter) {
   AT_DISPATCH_ALL_TYPES_AND3(
       kBFloat16, kHalf, kBool, iter.input_dtype(), "aminmax_cuda", [&]() {
-        gpu_reduce_kernel<scalar_t, scalar_t>(
-            iter,
-            MinMaxOps<scalar_t, scalar_t, int32_t>{},
-            thrust::pair<scalar_t, scalar_t>(
-                at::numeric_limits<scalar_t>::upper_bound(),
-                at::numeric_limits<scalar_t>::lower_bound()));
+        // gpu_reduce_kernel<scalar_t, scalar_t>(
+        //     iter,
+        //     MinMaxOps<scalar_t, scalar_t, int32_t>{},
+        //     thrust::pair<scalar_t, scalar_t>(
+        //         at::numeric_limits<scalar_t>::upper_bound(),
+        //         at::numeric_limits<scalar_t>::lower_bound()));
       });
 }
 

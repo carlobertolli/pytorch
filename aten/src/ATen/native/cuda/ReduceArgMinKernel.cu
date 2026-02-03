@@ -19,11 +19,11 @@ namespace at::native {
 
 template <typename scalar_t, typename acc_t = scalar_t>
 void argmin_kernel_cuda_impl(TensorIterator& iter) {
-  gpu_reduce_kernel<scalar_t, int64_t>(
-      iter,
-      ArgMinOps<acc_t>{},
-      thrust::pair<acc_t, int64_t>(
-          at::numeric_limits<acc_t>::upper_bound(), 0));
+  // gpu_reduce_kernel<scalar_t, int64_t>(
+  //     iter,
+  //     ArgMinOps<acc_t>{},
+  //     thrust::pair<acc_t, int64_t>(
+  //         at::numeric_limits<acc_t>::upper_bound(), 0));
 };
 
 void argmin_kernel_cuda(TensorIterator& iter) {
