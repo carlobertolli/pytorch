@@ -113,13 +113,15 @@ if(USE_ASAN OR USE_LSAN OR USE_TSAN)
   if(USE_ASAN)
     if(TARGET Sanitizer::address)
       list(APPEND Caffe2_DEPENDENCY_LIBS Sanitizer::address)
+      add_definitions(-DUSE_ASAN)
     else()
       message(WARNING "ASAN not found. Suppress this warning with -DUSE_ASAN=OFF.")
       caffe2_update_option(USE_ASAN OFF)
     endif()
-    if(TARGET Sanitizer::undefined)
-      list(APPEND Caffe2_DEPENDENCY_LIBS Sanitizer::undefined)
-    endif()
+    # GPU ASAN: prevent cmake to add -fsanitize=undefined to compiler option.
+    #if(TARGET Sanitizer::undefined)
+    #  list(APPEND Caffe2_DEPENDENCY_LIBS Sanitizer::undefined)
+    #endif()
   endif()
   if(USE_LSAN)
     if(TARGET Sanitizer::leak)
@@ -1057,6 +1059,16 @@ if(USE_ROCM)
 
     if(USE_LAYERNORM_FAST_RECIPROCAL)
       add_definitions(-DUSE_LAYERNORM_FAST_RECIPROCAL)
+    endif()
+
+    # GPU ASAN: Add sanitizer flags to HIP device code compilation
+    if(USE_ASAN)
+      list(APPEND HIP_CXX_FLAGS -fsanitize=address)
+      list(APPEND HIP_CXX_FLAGS -shared-libsan)
+      list(APPEND HIP_CXX_FLAGS -g)
+      # Disable ODR indicator globals to avoid false positive ODR violations
+      # when the same template is instantiated in multiple translation units
+      # list(APPEND HIP_CXX_FLAGS -fno-sanitize-address-use-odr-indicator)
     endif()
 
     # needed for compat with newer versions of hip-clang that introduced C++20 mangling rules
